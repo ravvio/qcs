@@ -5,7 +5,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define QCS_EPS 1e-12
+// Tolerances of f32 and f64 comparisons
+#define QCS_EPS_F32 1e-6f
+#define QCS_EPS_F64 1e-12
 
 QCS_Error qcs_bitstring(uint32_t n, size_t i, char *out) {
   if (n > QCS_MAX_QUBITS) {
@@ -29,10 +31,14 @@ QCS_Error qcs_bitstring(uint32_t n, size_t i, char *out) {
   return QCS_ERR_OK;
 }
 
-// Values a and b are almost equal
-bool qcs_eq(double a, double b) { return fabs(a - b) < QCS_EPS; }
+bool qcs_f32_near(float a, float b) { return fabsf(a - b) < QCS_EPS_F32; }
 
-// Complex values a and b are almost equal
-bool qcs_ceq(double complex a, double complex b) {
-  return cabs(a - b) < QCS_EPS;
+bool qcs_f64_near(double a, double b) { return fabs(a - b) < QCS_EPS_F64; }
+
+bool qcs_c64_near(float complex a, float complex b) {
+  return cabsf(a - b) < QCS_EPS_F32;
+}
+
+bool qcs_c128_near(double complex a, double complex b) {
+  return cabs(a - b) < QCS_EPS_F64;
 }

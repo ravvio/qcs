@@ -4,8 +4,6 @@ project(quantum-circuit-simulator LANGUAGES C CXX) # CXX: Dawn, via the engine
 option(QCS_BUILD_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
 
 set(FETCHCONTENT_QUIET FALSE)
-# compile_commands.json for editors (clangd)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
 endif()
@@ -16,6 +14,9 @@ set(QCS_GFX_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../allyria-gfx
     CACHE PATH "allyria-gfx checkout")
 add_subdirectory(${QCS_GFX_DIR} allyria-gfx)
 
+# compile_commands.json for editors (clangd), this repo's files only
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # QCS library, linked by the CLI, the tests and the viewer
 set(QCS_SOURCES
     ./lib/qcs_core.c
@@ -23,6 +24,7 @@ set(QCS_SOURCES
     ./lib/qcs_circuit.c
     ./lib/qcs_state.c
     ./lib/qcs_random.c
+    ./lib/qcs_gpu.c
 )
 add_library(qcs ${QCS_SOURCES})
 target_compile_features(qcs PUBLIC c_std_23)
@@ -66,4 +68,10 @@ if(QCS_BUILD_TESTS)
   qcs_test(test_gates cpu)
   qcs_test(test_circuit cpu)
   qcs_test(test_state cpu)
+  qcs_test(test_gpu gpu)
+
+  # Benchmark, not a test: ./build/bench cpu|gpu [max_qubits]
+  add_executable(bench bench/bench.c)
+  set_target_properties(bench PROPERTIES C_EXTENSIONS OFF)
+  target_link_libraries(bench PRIVATE qcs)
 endif()

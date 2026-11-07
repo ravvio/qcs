@@ -29,14 +29,14 @@ static QCS_State basis_state(uint32_t n, size_t index) {
 static void assert_amps(const QCS_State *state,
                         const double complex *expected) {
   for (size_t i = 0; i < qcs_state_size(state); i++) {
-    assert(qcs_ceq(state->amps[i], expected[i]));
+    assert(qcs_c128_near(state->amps[i], expected[i]));
   }
 }
 
 // Only amplitude index is non-zero, and it is 1
 static void assert_basis(const QCS_State *state, size_t index) {
   for (size_t i = 0; i < qcs_state_size(state); i++) {
-    assert(qcs_ceq(state->amps[i], i == index ? 1 : 0));
+    assert(qcs_c128_near(state->amps[i], i == index ? 1 : 0));
   }
 }
 
@@ -65,7 +65,7 @@ static void test_create_random(void) {
     QCS_State state;
     assert(qcs_state_create_random(n, &random, &state) == QCS_ERR_OK);
     assert(state.n == n);
-    assert(qcs_eq(qcs_state_norm(&state), 1));
+    assert(qcs_f64_near(qcs_state_norm(&state), 1));
     qcs_state_destroy(&state);
   }
 }
@@ -83,9 +83,9 @@ static void test_create_basis(void) {
 static void test_probability(void) {
   QCS_State state = new_state(1);
   qcs_state_apply_gate(&state, qcs_gate_create_h(0));
-  assert(qcs_eq(qcs_state_probability(&state, 0), 0.5));
-  assert(qcs_eq(qcs_state_probability(&state, 1), 0.5));
-  assert(qcs_eq(qcs_state_norm(&state), 1));
+  assert(qcs_f64_near(qcs_state_probability(&state, 0), 0.5));
+  assert(qcs_f64_near(qcs_state_probability(&state, 1), 0.5));
+  assert(qcs_f64_near(qcs_state_norm(&state), 1));
   qcs_state_destroy(&state);
 }
 
@@ -169,9 +169,38 @@ static void test_h_every_target(void) {
     qcs_state_apply_gate(&state, qcs_gate_create_h(t));
     for (size_t i = 0; i < 8; i++) {
       double complex expected = (i == 0 || i == ((size_t)1 << t)) ? S : 0;
-      assert(qcs_ceq(state.amps[i], expected));
+      assert(qcs_c128_near(state.amps[i], expected));
     }
     qcs_state_destroy(&state);
+  }
+}
+
+// X with any target and controls swaps each pair (i, i with bit t flipped)
+// exactly once: amps[i] = i before, so a skipped or doubled pair stays put
+static void test_x_swaps_every_pair(void) {
+  enum { N = 5, SIZE = 1 << N };
+  for (uint32_t t = 0; t < N; t++) {
+    size_t bit = (size_t)1 << t;
+    for (size_t controls = 0; controls < SIZE; controls++) {
+      if (controls & bit)
+        continue;
+      QCS_Gate x = qcs_gate_create_x(t);
+      for (uint32_t c = 0; c < N; c++) {
+        if (controls & ((size_t)1 << c))
+          qcs_gate_add_control(&x, c);
+      }
+
+      QCS_State state = new_state(N);
+      for (size_t i = 0; i < SIZE; i++) {
+        state.amps[i] = i;
+      }
+      qcs_state_apply_gate(&state, x);
+      for (size_t i = 0; i < SIZE; i++) {
+        size_t from = (i & controls) == controls ? i ^ bit : i;
+        assert(qcs_c128_near(state.amps[i], from));
+      }
+      qcs_state_destroy(&state);
+    }
   }
 }
 
@@ -182,7 +211,7 @@ static void test_uniform_superposition(void) {
     qcs_state_apply_gate(&state, qcs_gate_create_h(q));
   }
   for (size_t i = 0; i < 16; i++) {
-    assert(qcs_ceq(state.amps[i], 0.25));
+    assert(qcs_c128_near(state.amps[i], 0.25));
   }
   qcs_state_destroy(&state);
 }
@@ -264,7 +293,7 @@ static void test_ghz(void) {
     assert(qcs_circuit_run(&ghz, &state) == QCS_ERR_OK);
     size_t last = qcs_state_size(&state) - 1;
     for (size_t i = 0; i <= last; i++) {
-      assert(qcs_ceq(state.amps[i], (i == 0 || i == last) ? S : 0));
+      assert(qcs_c128_near(state.amps[i], (i == 0 || i == last) ? S : 0));
     }
 
     qcs_state_destroy(&state);
@@ -295,7 +324,7 @@ static void test_norm_random_circuit(void) {
   for (int g = 0; g < 1000; g++) {
     qcs_state_apply_gate(&state, qcs_gate_create_random(10, &random));
   }
-  assert(qcs_eq(qcs_state_norm(&state), 1));
+  assert(qcs_f64_near(qcs_state_norm(&state), 1));
   qcs_state_destroy(&state);
 }
 
@@ -341,7 +370,7 @@ static void test_gate_is_local(void) {
       after[i & ~bit] += qcs_state_probability(&state, i);
     }
     for (size_t r = 0; r < SIZE; r++) {
-      assert(qcs_eq(after[r], before[r]));
+      assert(qcs_f64_near(after[r], before[r]));
     }
   }
   qcs_state_destroy(&state);
@@ -542,11 +571,11 @@ static void test_fidelity(void) {
   assert(qcs_state_create_random(2, &random, &state) == QCS_ERR_OK);
   double F;
   assert(qcs_state_fidelity(&state, &state, &F) == QCS_ERR_OK);
-  assert(qcs_eq(F, 1));
+  assert(qcs_f64_near(F, 1));
   qcs_state_destroy(&state);
 
   state = random_circuit_state(4, 13);
-  assert(qcs_eq(fidelity(&state, &state), 1));
+  assert(qcs_f64_near(fidelity(&state, &state), 1));
   qcs_state_destroy(&state);
 }
 
@@ -555,7 +584,7 @@ static void test_fidelity_conj(void) {
   QCS_State state = new_state(1);
   state.amps[0] = S;
   state.amps[1] = I * S;
-  assert(qcs_eq(fidelity(&state, &state), 1));
+  assert(qcs_f64_near(fidelity(&state, &state), 1));
   qcs_state_destroy(&state);
 }
 
@@ -565,7 +594,7 @@ static void test_fidelity_global_phase(void) {
   double complex phases[] = {-1, I, cexp(I * 0.3)};
   for (size_t k = 0; k < sizeof phases / sizeof phases[0]; k++) {
     QCS_State other = scaled(&state, phases[k]);
-    assert(qcs_eq(fidelity(&state, &other), 1));
+    assert(qcs_f64_near(fidelity(&state, &other), 1));
     qcs_state_destroy(&other);
   }
   qcs_state_destroy(&state);
@@ -575,7 +604,7 @@ static void test_fidelity_global_phase(void) {
 static void test_fidelity_orthogonal(void) {
   QCS_State zero = basis_state(1, 0);
   QCS_State one = basis_state(1, 1);
-  assert(qcs_eq(fidelity(&zero, &one), 0));
+  assert(qcs_f64_near(fidelity(&zero, &one), 0));
   qcs_state_destroy(&zero);
   qcs_state_destroy(&one);
 
@@ -585,7 +614,7 @@ static void test_fidelity_orthogonal(void) {
   qcs_state_apply_gate(&plus, qcs_gate_create_cx(1, 0));
   QCS_State minus = scaled(&plus, 1);
   qcs_state_apply_gate(&minus, qcs_gate_create_z(0));
-  assert(qcs_eq(fidelity(&plus, &minus), 0));
+  assert(qcs_f64_near(fidelity(&plus, &minus), 0));
   qcs_state_destroy(&plus);
   qcs_state_destroy(&minus);
 }
@@ -595,14 +624,14 @@ static void test_fidelity_overlap(void) {
   QCS_State zero = new_state(1);
   QCS_State plus = new_state(1);
   qcs_state_apply_gate(&plus, qcs_gate_create_h(0));
-  assert(qcs_eq(fidelity(&zero, &plus), 0.5));
-  assert(qcs_eq(fidelity(&plus, &zero), 0.5));
+  assert(qcs_f64_near(fidelity(&zero, &plus), 0.5));
+  assert(qcs_f64_near(fidelity(&plus, &zero), 0.5));
   qcs_state_destroy(&zero);
   qcs_state_destroy(&plus);
 
   QCS_State a = random_circuit_state(4, 15);
   QCS_State b = random_circuit_state(4, 16);
-  assert(qcs_eq(fidelity(&a, &b), fidelity(&b, &a)));
+  assert(qcs_f64_near(fidelity(&a, &b), fidelity(&b, &a)));
   qcs_state_destroy(&a);
   qcs_state_destroy(&b);
 }
@@ -613,8 +642,8 @@ static void test_fidelity_unnormalized(void) {
   QCS_State plus = new_state(1);
   qcs_state_apply_gate(&plus, qcs_gate_create_h(0));
   QCS_State short_plus = scaled(&plus, 0.9);
-  assert(qcs_eq(fidelity(&plus, &short_plus), 1));
-  assert(qcs_eq(fidelity(&zero, &short_plus), 0.5));
+  assert(qcs_f64_near(fidelity(&plus, &short_plus), 1));
+  assert(qcs_f64_near(fidelity(&zero, &short_plus), 0.5));
   qcs_state_destroy(&zero);
   qcs_state_destroy(&plus);
   qcs_state_destroy(&short_plus);
@@ -649,6 +678,7 @@ int main(void) {
   test_interference();
   test_x_every_target();
   test_h_every_target();
+  test_x_swaps_every_pair();
   test_uniform_superposition();
   test_cx_truth_table();
   test_ccx_truth_table();

@@ -72,20 +72,24 @@ void qcs_state_destroy(QCS_State *state) {
 
 void qcs_state_apply_gate(QCS_State *state, QCS_Gate gate) {
   size_t target_bit = (size_t)1 << gate.target;
-  size_t size = (size_t)1 << state->n;
-  for (size_t i = 0; i < size; i++) {
-    // skip already matched state branch
-    if (i & target_bit)
+  size_t target_mask = target_bit - 1;
+  // 2^(n-1) pairs
+  size_t pairs_count = qcs_state_size(state) / 2;
+  for (size_t p = 0; p < pairs_count; p++) {
+    // i0/i1 is the pair with 0/1 inserted at target position
+    size_t low = (p & target_mask);
+    size_t high = (p & ~target_mask) << 1;
+    // work out pairs
+    size_t i0 = high | low;
+    size_t i1 = i0 | target_bit;
+    // check controls
+    if ((i0 & gate.controls) != gate.controls) {
       continue;
-    // skip if controls are off
-    if ((i & gate.controls) != gate.controls)
-      continue;
-    // apply gate
-    size_t i0 = i;
-    size_t i1 = i | target_bit;
+    }
+    // retrieve amplitudes
     double complex a0 = state->amps[i0];
     double complex a1 = state->amps[i1];
-    // m * v
+    // apply gate: m * v
     state->amps[i0] = gate.m[0][0] * a0 + gate.m[0][1] * a1;
     state->amps[i1] = gate.m[1][0] * a0 + gate.m[1][1] * a1;
   }
@@ -131,6 +135,14 @@ QCS_Error qcs_state_sample(const QCS_State *state, size_t shots,
     return QCS_ERR_INVALID_STATE;
   }
 
+  qcs_sample_cdf(cdf, size, shots, random, outcomes);
+  free(cdf);
+  return QCS_ERR_OK;
+}
+
+void qcs_sample_cdf(const double *cdf, size_t size, size_t shots,
+                    QCS_Random *random, size_t *outcomes) {
+  double total = cdf[size - 1];
   for (size_t shot = 0; shot < shots; shot++) {
     // dart in [0, total)
     double u = qcs_random_next_double(random) * total;
@@ -148,9 +160,6 @@ QCS_Error qcs_state_sample(const QCS_State *state, size_t shots,
     }
     outcomes[shot] = lo;
   }
-
-  free(cdf);
-  return QCS_ERR_OK;
 }
 
 QCS_Error qcs_state_fidelity(const QCS_State *a, const QCS_State *b,

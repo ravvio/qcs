@@ -34,6 +34,10 @@ double qcs_state_norm(const QCS_State *state);
 // Measure all qubits shots times, the pattern of each shot in outcomes
 QCS_Error qcs_state_sample(const QCS_State *state, size_t shots,
                            QCS_Random *random, size_t *outcomes);
+// shots patterns drawn from cdf, the cumulative probabilities of size
+// patterns, into outcomes
+void qcs_sample_cdf(const double *cdf, size_t size, size_t shots,
+                    QCS_Random *random, size_t *outcomes);
 // Calculate fidelity of state a with respect to b
 QCS_Error qcs_state_fidelity(const QCS_State *a, const QCS_State *b,
                              double *out);
