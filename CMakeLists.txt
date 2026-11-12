@@ -25,6 +25,8 @@ set(QCS_SOURCES
     ./lib/qcs_state.c
     ./lib/qcs_random.c
     ./lib/qcs_gpu.c
+    ./lib/qasm/qcs_qasm_lexer.c
+    ./lib/qasm/qcs_qasm_parser.c
 )
 add_library(qcs ${QCS_SOURCES})
 target_compile_features(qcs PUBLIC c_std_23)
@@ -39,8 +41,6 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(qcs PUBLIC m)
 endif()
 # Shaders load from the source tree, so edits apply on the next run
-# ponytail: native only, add the /shaders/ path and --preload-file for the
-# browser with the first shader
 target_compile_definitions(qcs PRIVATE
     QCS_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders/")
 
@@ -68,6 +68,7 @@ if(QCS_BUILD_TESTS)
   qcs_test(test_gates cpu)
   qcs_test(test_circuit cpu)
   qcs_test(test_state cpu)
+  qcs_test(test_qasm_lexer cpu)
   qcs_test(test_gpu gpu)
 
   # Benchmark, not a test: ./build/bench cpu|gpu [max_qubits]
