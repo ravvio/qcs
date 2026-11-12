@@ -5,6 +5,7 @@
 #include <qcs/core.h>
 #include <qcs/gate.h>
 #include <qcs/gpu.h>
+#include <qcs/qasm.h>
 #include <qcs/random.h>
 #include <qcs/state.h>
 

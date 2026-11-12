@@ -15,6 +15,7 @@ typedef enum : uint8_t {
   QCS_ERR_QUBIT_RANGE,
   QCS_ERR_INVALID_STATE,
   QCS_ERR_GPU,
+  QCS_ERR_QASM_PARSE_FAILURE,
 } QCS_Error;
 
 QCS_Error qcs_bitstring(uint32_t n, size_t i, char *out);

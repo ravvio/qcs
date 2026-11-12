@@ -8,7 +8,7 @@
 // Every gate is unitary: U† U = I
 static void test_unitary(void) {
   QCS_Gate gates[] = {
-      qcs_gate_create_i(0),     qcs_gate_create_x(0),
+      qcs_gate_create_id(0),    qcs_gate_create_x(0),
       qcs_gate_create_y(0),     qcs_gate_create_z(0),
       qcs_gate_create_h(0),     qcs_gate_create_cx(1, 0),
       qcs_gate_create_cy(1, 0), qcs_gate_create_cz(1, 0),
@@ -20,7 +20,7 @@ static void test_unitary(void) {
 
 // Textbook identities between gates on the same qubit
 static void test_identities(void) {
-  QCS_Gate i = qcs_gate_create_i(0);
+  QCS_Gate i = qcs_gate_create_id(0);
   QCS_Gate x = qcs_gate_create_x(0);
   QCS_Gate y = qcs_gate_create_y(0);
   QCS_Gate z = qcs_gate_create_z(0);

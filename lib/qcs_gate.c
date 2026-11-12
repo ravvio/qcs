@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // Identity gate, does nothing
-QCS_Gate qcs_gate_create_i(uint32_t target) {
+QCS_Gate qcs_gate_create_id(uint32_t target) {
   return (QCS_Gate){
       .m = {{1, 0}, {0, 1}},
       .target = target,
@@ -138,7 +138,7 @@ QCS_Gate qcs_gate_create_random(uint32_t qubit_count, QCS_Random *random) {
 // U† U = I
 bool qcs_gate_is_unitary(QCS_Gate gate) {
   QCS_Gate product = qcs_gate_mul(qcs_gate_adjoint(gate), gate);
-  return qcs_gate_matrix_equal(product, qcs_gate_create_i(gate.target));
+  return qcs_gate_matrix_equal(product, qcs_gate_create_id(gate.target));
 }
 
 // Same matrices within 1e-12

@@ -82,6 +82,16 @@ static void set_error(QCS_QasmToken *token, const char *message) {
   token->length = (uint32_t)strlen(message);
 }
 
+bool qcs_qasm_token_text_is(const QCS_QasmToken *token, const char *str) {
+  return token->length == strlen(str) &&
+         memcmp(token->start, str, token->length) == 0;
+}
+
+bool qcs_qasm_token_iden_is(const QCS_QasmToken *token, const char *str) {
+  return token->kind == QCS_QASM_TOKEN_IDENT &&
+         qcs_qasm_token_text_is(token, str);
+}
+
 QCS_QasmToken qcs_qasm_lexer_next(QCS_QasmLexer *lexer) {
   const char *p = lexer->cursor;
 

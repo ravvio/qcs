@@ -69,6 +69,7 @@ if(QCS_BUILD_TESTS)
   qcs_test(test_circuit cpu)
   qcs_test(test_state cpu)
   qcs_test(test_qasm_lexer cpu)
+  qcs_test(test_qasm cpu)
   qcs_test(test_gpu gpu)
 
   # Benchmark, not a test: ./build/bench cpu|gpu [max_qubits]

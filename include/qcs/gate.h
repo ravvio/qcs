@@ -12,7 +12,7 @@ typedef struct {
 } QCS_Gate;
 
 // Single qubit gates
-QCS_Gate qcs_gate_create_i(uint32_t target);
+QCS_Gate qcs_gate_create_id(uint32_t target);
 QCS_Gate qcs_gate_create_x(uint32_t target);
 QCS_Gate qcs_gate_create_y(uint32_t target);
 QCS_Gate qcs_gate_create_z(uint32_t target);

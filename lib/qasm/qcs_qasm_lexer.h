@@ -49,5 +49,9 @@ typedef struct {
 
 void qcs_qasm_lexer_init(QCS_QasmLexer *lexer, const char *source);
 QCS_QasmToken qcs_qasm_lexer_next(QCS_QasmLexer *lexer);
+// token whose text is str
+bool qcs_qasm_token_text_is(const QCS_QasmToken *token, const char *str);
+// IDENT whose text is str
+bool qcs_qasm_token_iden_is(const QCS_QasmToken *token, const char *str);
 
 #endif
