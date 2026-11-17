@@ -175,8 +175,9 @@ static void test_h_every_target(void) {
   }
 }
 
-// X with any target and controls swaps each pair (i, i with bit t flipped)
-// exactly once: amps[i] = i before, so a skipped or doubled pair stays put
+// X with any target and controls, each on 1 or on 0, swaps each pair (i, i
+// with bit t flipped) exactly once: amps[i] = i before, so a skipped or
+// doubled pair stays put
 static void test_x_swaps_every_pair(void) {
   enum { N = 5, SIZE = 1 << N };
   for (uint32_t t = 0; t < N; t++) {
@@ -184,22 +185,30 @@ static void test_x_swaps_every_pair(void) {
     for (size_t controls = 0; controls < SIZE; controls++) {
       if (controls & bit)
         continue;
-      QCS_Gate x = qcs_gate_create_x(t);
-      for (uint32_t c = 0; c < N; c++) {
-        if (controls & ((size_t)1 << c))
-          qcs_gate_add_control(&x, c);
-      }
+      // every subset of the controls as the zeros
+      for (size_t zeros = 0; zeros < SIZE; zeros++) {
+        if (zeros & ~controls)
+          continue;
+        QCS_Gate x = qcs_gate_create_x(t);
+        for (uint32_t c = 0; c < N; c++) {
+          if (zeros & ((size_t)1 << c))
+            qcs_gate_add_control_zero(&x, c);
+          else if (controls & ((size_t)1 << c))
+            qcs_gate_add_control_one(&x, c);
+        }
 
-      QCS_State state = new_state(N);
-      for (size_t i = 0; i < SIZE; i++) {
-        state.amps[i] = i;
+        QCS_State state = new_state(N);
+        for (size_t i = 0; i < SIZE; i++) {
+          state.amps[i] = i;
+        }
+        qcs_state_apply_gate(&state, x);
+        for (size_t i = 0; i < SIZE; i++) {
+          bool acts = (i & controls) == (controls & ~zeros);
+          size_t from = acts ? i ^ bit : i;
+          assert(qcs_c128_near(state.amps[i], from));
+        }
+        qcs_state_destroy(&state);
       }
-      qcs_state_apply_gate(&state, x);
-      for (size_t i = 0; i < SIZE; i++) {
-        size_t from = (i & controls) == controls ? i ^ bit : i;
-        assert(qcs_c128_near(state.amps[i], from));
-      }
-      qcs_state_destroy(&state);
     }
   }
 }
@@ -238,7 +247,7 @@ static void test_cx_truth_table(void) {
 // CCX (controls 0 and 1, target 2) flips qubit 2 only when both are 1
 static void test_ccx_truth_table(void) {
   QCS_Gate ccx = qcs_gate_create_cx(2, 0);
-  qcs_gate_add_control(&ccx, 1);
+  qcs_gate_add_control_one(&ccx, 1);
   for (size_t in = 0; in < 8; in++) {
     QCS_State state = basis_state(3, in);
     qcs_state_apply_gate(&state, ccx);
@@ -666,6 +675,99 @@ static void test_fidelity_invalid(void) {
   qcs_state_destroy(&zero_state);
 }
 
+// |+⟩ gives 0 and 1 about half each, and leaves the basis state of the value
+static void test_measure_plus(void) {
+  QCS_Random random = qcs_random_create(5);
+  int ones = 0;
+  for (int shot = 0; shot < 10000; shot++) {
+    QCS_State state = new_state(1);
+    qcs_state_apply_gate(&state, qcs_gate_create_h(0));
+    bool value;
+    assert(qcs_state_measure(&state, 0, &random, &value) == QCS_ERR_OK);
+    ones += value;
+    assert(qcs_c128_near(state.amps[value], 1));
+    assert(qcs_c128_near(state.amps[!value], 0));
+    qcs_state_destroy(&state);
+  }
+  // 10^4 draws at 1/2: standard deviation 50, within 5 of them
+  assert(ones > 5000 - 250 && ones < 5000 + 250);
+}
+
+// A basis state measures as its bit, and stays as it was
+static void test_measure_basis(void) {
+  QCS_Random random = qcs_random_create(6);
+  QCS_State state = basis_state(2, 0b10);
+  bool value;
+  assert(qcs_state_measure(&state, 1, &random, &value) == QCS_ERR_OK);
+  assert(value);
+  assert(qcs_state_measure(&state, 0, &random, &value) == QCS_ERR_OK);
+  assert(!value);
+  assert(qcs_c128_near(state.amps[0b10], 1));
+  qcs_state_destroy(&state);
+}
+
+// The two qubits of a Bell pair always measure the same
+static void test_measure_bell(void) {
+  QCS_Random random = qcs_random_create(7);
+  for (int shot = 0; shot < 100; shot++) {
+    QCS_State state = new_state(2);
+    qcs_state_apply_gate(&state, qcs_gate_create_h(0));
+    qcs_state_apply_gate(&state, qcs_gate_create_cx(1, 0));
+    bool a, b;
+    assert(qcs_state_measure(&state, 0, &random, &a) == QCS_ERR_OK);
+    assert(qcs_state_measure(&state, 1, &random, &b) == QCS_ERR_OK);
+    assert(a == b);
+    assert(qcs_c128_near(state.amps[a ? 0b11 : 0b00], 1));
+    qcs_state_destroy(&state);
+  }
+}
+
+// After a measure the norm is 1, from a random state and from one of norm 4
+static void test_measure_norm(void) {
+  QCS_Random random = qcs_random_create(8);
+  QCS_State state;
+  assert(qcs_state_create_random(4, &random, &state) == QCS_ERR_OK);
+  QCS_State big = scaled(&state, 2);
+  bool value;
+  assert(qcs_state_measure(&state, 2, &random, &value) == QCS_ERR_OK);
+  assert(qcs_f64_near(qcs_state_norm(&state), 1));
+  assert(qcs_state_measure(&big, 2, &random, &value) == QCS_ERR_OK);
+  assert(qcs_f64_near(qcs_state_norm(&big), 1));
+  qcs_state_destroy(&state);
+  qcs_state_destroy(&big);
+}
+
+// Reset leaves the qubit at 0, from |1⟩ and from |+⟩
+static void test_reset(void) {
+  QCS_Random random = qcs_random_create(9);
+  QCS_State one = basis_state(2, 0b10);
+  assert(qcs_state_reset(&one, 1, &random) == QCS_ERR_OK);
+  assert(qcs_c128_near(one.amps[0b00], 1));
+  qcs_state_destroy(&one);
+  for (int shot = 0; shot < 100; shot++) {
+    QCS_State plus = new_state(1);
+    qcs_state_apply_gate(&plus, qcs_gate_create_h(0));
+    assert(qcs_state_reset(&plus, 0, &random) == QCS_ERR_OK);
+    assert(qcs_c128_near(plus.amps[0], 1));
+    assert(qcs_c128_near(plus.amps[1], 0));
+    qcs_state_destroy(&plus);
+  }
+}
+
+// A qubit past the state and a zero state can't be measured
+static void test_measure_invalid(void) {
+  QCS_Random random = qcs_random_create(10);
+  QCS_State state = new_state(2);
+  QCS_State zero_state = scaled(&state, 0);
+  bool value;
+  assert(qcs_state_measure(&state, 2, &random, &value) == QCS_ERR_QUBIT_RANGE);
+  assert(qcs_state_measure(&zero_state, 0, &random, &value) ==
+         QCS_ERR_INVALID_STATE);
+  assert(qcs_state_reset(&state, 5, &random) == QCS_ERR_QUBIT_RANGE);
+  qcs_state_destroy(&state);
+  qcs_state_destroy(&zero_state);
+}
+
 int main(void) {
   test_create();
   test_create_max_qubits();
@@ -704,6 +806,12 @@ int main(void) {
   test_fidelity_overlap();
   test_fidelity_unnormalized();
   test_fidelity_invalid();
+  test_measure_plus();
+  test_measure_basis();
+  test_measure_bell();
+  test_measure_norm();
+  test_reset();
+  test_measure_invalid();
   puts("state ok");
   return 0;
 }

@@ -1,4 +1,4 @@
-// OpenQASM 2.0 (https://arxiv.org/abs/1707.03429) lexer
+// OpenQASM 3 (https://openqasm.com) lexer
 #ifndef QCS_QASM_LEXER_DECL
 #define QCS_QASM_LEXER_DECL
 
@@ -11,8 +11,17 @@ typedef enum : uint8_t {
   QCS_QASM_TOKEN_INT,
   QCS_QASM_TOKEN_REAL,
   QCS_QASM_TOKEN_STRING,
+  // Double char tokens
   QCS_QASM_TOKEN_ARROW,
   QCS_QASM_TOKEN_EQ_EQ,
+  QCS_QASM_TOKEN_ASTERISK_ASTERISK,
+  QCS_QASM_TOKEN_NOT_EQ,
+  QCS_QASM_TOKEN_LESSER_EQ,
+  QCS_QASM_TOKEN_GREATER_EQ,
+  QCS_QASM_TOKEN_AMP_AMP,
+  QCS_QASM_TOKEN_PIPE_PIPE,
+  QCS_QASM_TOKEN_LESSER_LESSER,
+  QCS_QASM_TOKEN_GREATER_GREATER,
   // Single char tokens
   QCS_QASM_TOKEN_SEMICOLON,
   QCS_QASM_TOKEN_COMMA,
@@ -27,6 +36,16 @@ typedef enum : uint8_t {
   QCS_QASM_TOKEN_ASTERISK,
   QCS_QASM_TOKEN_SLASH,
   QCS_QASM_TOKEN_CARET,
+  QCS_QASM_TOKEN_EQ,
+  QCS_QASM_TOKEN_LESSER,
+  QCS_QASM_TOKEN_GREATER,
+  QCS_QASM_TOKEN_NOT,
+  QCS_QASM_TOKEN_TILDE,
+  QCS_QASM_TOKEN_AMP,
+  QCS_QASM_TOKEN_PIPE,
+  QCS_QASM_TOKEN_PERCENT,
+  QCS_QASM_TOKEN_COLON,
+  QCS_QASM_TOKEN_AT,
 } QCS_QasmTokenKind;
 
 typedef struct {
@@ -36,8 +55,10 @@ typedef struct {
   const char *start;
   uint32_t length;
   uint32_t line, column;
-  // INT or REAL
-  double number;
+  union {
+    uint64_t integer; // INT, exact
+    double number;    // REAL
+  };
 } QCS_QasmToken;
 
 typedef struct {

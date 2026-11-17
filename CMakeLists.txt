@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 project(quantum-circuit-simulator LANGUAGES C CXX) # CXX: Dawn, via the engine
 
 option(QCS_BUILD_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
+option(QCS_SANITIZE "Build with AddressSanitizer and UBSan" OFF)
 
 set(FETCHCONTENT_QUIET FALSE)
 if(NOT CMAKE_BUILD_TYPE)
@@ -14,6 +15,13 @@ set(QCS_GFX_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../allyria-gfx
     CACHE PATH "allyria-gfx checkout")
 add_subdirectory(${QCS_GFX_DIR} allyria-gfx)
 
+# Sanitizers for this repo's targets, added after the engine so it stays
+# uninstrumented
+if(QCS_SANITIZE)
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
 # compile_commands.json for editors (clangd), this repo's files only
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -25,8 +33,11 @@ set(QCS_SOURCES
     ./lib/qcs_state.c
     ./lib/qcs_random.c
     ./lib/qcs_gpu.c
+    ./lib/qcs_program.c
     ./lib/qasm/qcs_qasm_lexer.c
+    ./lib/qasm/qcs_qasm_ast.c
     ./lib/qasm/qcs_qasm_parser.c
+    ./lib/qasm/qcs_qasm_program.c
 )
 add_library(qcs ${QCS_SOURCES})
 target_compile_features(qcs PUBLIC c_std_23)
@@ -45,7 +56,7 @@ target_compile_definitions(qcs PRIVATE
     QCS_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders/")
 
 # CLI, built as ./build/qcs (the target name qcs is the library's)
-add_executable(qcs_cli src/main.c)
+add_executable(qcs_cli src/main.c src/args.c)
 set_target_properties(qcs_cli PROPERTIES OUTPUT_NAME qcs C_EXTENSIONS OFF)
 target_link_libraries(qcs_cli PRIVATE qcs)
 
@@ -68,8 +79,11 @@ if(QCS_BUILD_TESTS)
   qcs_test(test_gates cpu)
   qcs_test(test_circuit cpu)
   qcs_test(test_state cpu)
+  qcs_test(test_program cpu)
   qcs_test(test_qasm_lexer cpu)
-  qcs_test(test_qasm cpu)
+  qcs_test(test_qasm_ast cpu)
+  qcs_test(test_qasm_parser cpu)
+  qcs_test(test_qasm_program cpu)
   qcs_test(test_gpu gpu)
 
   # Benchmark, not a test: ./build/bench cpu|gpu [max_qubits]

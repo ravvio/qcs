@@ -10,8 +10,10 @@ struct Gate {
     m11: vec2f,
     // Target qubit
     target_qubit: u32,
-    // Control qubits bitmask
+    // Control qubits bitmask, on 1 or 0
     controls: u32,
+    // Controls that must be 1, the others must be 0
+    control_ones: u32,
 }
 
 @group(0) @binding(0) var<uniform> gate: Gate;
@@ -43,7 +45,7 @@ fn comp_main(@builtin(workgroup_id) group: vec3u,
     let i1 = i0 | target_bit;
 
     // check controls
-    if ((i0 & gate.controls) != gate.controls) {
+    if ((i0 & gate.controls) != gate.control_ones) {
         return;
     }
 

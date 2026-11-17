@@ -149,6 +149,20 @@ static void test_run_split(void) {
   qcs_circuit_destroy(&circuit);
 }
 
+// the global phase on every amplitude, as on the CPU (f32 precision)
+static void test_run_global_phase(void) {
+  QCS_Circuit circuit;
+  assert(qcs_circuit_create(1, &circuit) == QCS_ERR_OK);
+  assert(qcs_circuit_push_gate(&circuit, qcs_gate_create_h(0)) == QCS_ERR_OK);
+  circuit.global_phase = 0.3;
+  QCS_State state = run_gpu(&circuit);
+  double complex amp = cexp(0.3 * I) * S;
+  assert(cabs(state.amps[0] - amp) < 1e-6);
+  assert(cabs(state.amps[1] - amp) < 1e-6);
+  qcs_state_destroy(&state);
+  qcs_circuit_destroy(&circuit);
+}
+
 // a circuit for other qubits than the state: refused
 static void test_run_mismatch(void) {
   QCS_Circuit circuit;
@@ -245,6 +259,236 @@ static void test_sample_bell(void) {
   qcs_circuit_destroy(&circuit);
 }
 
+// collapse qubit of state onto value, as qcs_state_measure does
+static void cpu_collapse(QCS_State *state, uint32_t qubit, bool value) {
+  double p = 0;
+  for (size_t i = 0; i < qcs_state_size(state); i++) {
+    if ((bool)(i >> qubit & 1) == value) {
+      p += qcs_state_probability(state, i);
+    }
+  }
+  for (size_t i = 0; i < qcs_state_size(state); i++) {
+    bool keep = (bool)(i >> qubit & 1) == value;
+    state->amps[i] = keep ? state->amps[i] / sqrt(p) : 0;
+  }
+}
+
+// circuit on n qubits of the gates
+static QCS_Circuit circuit_of(uint32_t n, const QCS_Gate *gates, size_t count) {
+  QCS_Circuit circuit;
+  assert(qcs_circuit_create(n, &circuit) == QCS_ERR_OK);
+  for (size_t g = 0; g < count; g++) {
+    assert(qcs_circuit_push_gate(&circuit, gates[g]) == QCS_ERR_OK);
+  }
+  return circuit;
+}
+
+// Measure: a basis state gives its bit and stays; |+⟩ collapses onto the
+// value drawn
+static void test_measure(void) {
+  QCS_Circuit x = circuit_of(2, (QCS_Gate[]){qcs_gate_create_x(1)}, 1);
+  QCS_GPUState gpu;
+  assert(qcs_gpu_state_create(2, &gpu) == QCS_ERR_OK);
+  assert(qcs_gpu_circuit_run(&x, &gpu) == QCS_ERR_OK);
+  QCS_Random random = qcs_random_create(3);
+  bool value;
+  assert(qcs_gpu_state_measure(&gpu, 1, &random, &value) == QCS_ERR_OK);
+  assert(value == 1);
+  assert(qcs_gpu_state_measure(&gpu, 0, &random, &value) == QCS_ERR_OK);
+  assert(value == 0);
+  QCS_State state;
+  assert(qcs_gpu_state_amplitudes(&gpu, &state) == QCS_ERR_OK);
+  assert(qcs_c128_near(state.amps[0b10], 1));
+  qcs_state_destroy(&state);
+  qcs_gpu_state_destroy(&gpu);
+  qcs_circuit_destroy(&x);
+
+  // |+⟩: the drawn value's amplitude, scaled to 1
+  QCS_Circuit h = circuit_of(1, (QCS_Gate[]){qcs_gate_create_h(0)}, 1);
+  assert(qcs_gpu_state_create(1, &gpu) == QCS_ERR_OK);
+  assert(qcs_gpu_circuit_run(&h, &gpu) == QCS_ERR_OK);
+  assert(qcs_gpu_state_measure(&gpu, 0, &random, &value) == QCS_ERR_OK);
+  assert(qcs_gpu_state_amplitudes(&gpu, &state) == QCS_ERR_OK);
+  assert(qcs_c128_near(state.amps[value], 1));
+  assert(qcs_c128_near(state.amps[!value], 0));
+  qcs_state_destroy(&state);
+
+  // out of range, and a value of probability 0
+  assert(qcs_gpu_state_measure(&gpu, 1, &random, &value) ==
+         QCS_ERR_QUBIT_RANGE);
+  assert(qcs_gpu_state_collapse(&gpu, 0, !value) == QCS_ERR_INVALID_STATE);
+  qcs_gpu_state_destroy(&gpu);
+  qcs_circuit_destroy(&h);
+}
+
+// Teleportation with every forced (c0, c1): the GPU branch against the CPU's,
+// and q[2] undone to |0⟩
+static void test_collapse_teleport(void) {
+  const double pi = QCS_PI;
+  QCS_Gate prefix_gates[] = {
+      qcs_gate_create_ry(0, pi / 3), qcs_gate_create_rz(0, pi / 4),
+      qcs_gate_create_h(1),          qcs_gate_create_cx(2, 1),
+      qcs_gate_create_cx(1, 0),      qcs_gate_create_h(0),
+  };
+  QCS_Circuit prefix = circuit_of(3, prefix_gates, 6);
+  for (int c = 0; c < 4; c++) {
+    bool c0 = c & 1, c1 = c >> 1 & 1;
+
+    // the corrections, then the preparation undone
+    QCS_Gate fix_gates[4];
+    size_t count = 0;
+    if (c1) {
+      fix_gates[count++] = qcs_gate_create_x(2);
+    }
+    if (c0) {
+      fix_gates[count++] = qcs_gate_create_z(2);
+    }
+    fix_gates[count++] = qcs_gate_create_rz(2, -pi / 4);
+    fix_gates[count++] = qcs_gate_create_ry(2, -pi / 3);
+    QCS_Circuit fix = circuit_of(3, fix_gates, count);
+
+    // CPU
+    QCS_State cpu;
+    assert(qcs_state_create(3, &cpu) == QCS_ERR_OK);
+    assert(qcs_circuit_run(&prefix, &cpu) == QCS_ERR_OK);
+    cpu_collapse(&cpu, 0, c0);
+    cpu_collapse(&cpu, 1, c1);
+    assert(qcs_circuit_run(&fix, &cpu) == QCS_ERR_OK);
+
+    // GPU
+    QCS_GPUState gpu;
+    assert(qcs_gpu_state_create(3, &gpu) == QCS_ERR_OK);
+    assert(qcs_gpu_circuit_run(&prefix, &gpu) == QCS_ERR_OK);
+    assert(qcs_gpu_state_collapse(&gpu, 0, c0) == QCS_ERR_OK);
+    assert(qcs_gpu_state_collapse(&gpu, 1, c1) == QCS_ERR_OK);
+    assert(qcs_gpu_circuit_run(&fix, &gpu) == QCS_ERR_OK);
+    QCS_State back;
+    assert(qcs_gpu_state_amplitudes(&gpu, &back) == QCS_ERR_OK);
+
+    // same branch, q[2] at 0
+    double F;
+    assert(qcs_state_fidelity(&cpu, &back, &F) == QCS_ERR_OK);
+    if (F < 1 - 1e-5) {
+      fprintf(stderr, "[e] (c0, c1) = (%d, %d): fidelity %.9f\n", c0, c1, F);
+      assert(false);
+    }
+    for (size_t i = 0b100; i < 8; i++) {
+      assert(qcs_state_probability(&back, i) < 1e-5);
+    }
+    qcs_state_destroy(&back);
+    qcs_gpu_state_destroy(&gpu);
+    qcs_state_destroy(&cpu);
+    qcs_circuit_destroy(&fix);
+  }
+  qcs_circuit_destroy(&prefix);
+}
+
+enum { SHOTS = 1000 };
+
+// count within 5σ of a binomial(SHOTS, p)
+static bool near_expected(size_t count, double p) {
+  return fabs((double)count - SHOTS * p) <= 5 * sqrt(SHOTS * p * (1 - p));
+}
+
+// append gate to program, as a circuit on all its qubits
+static void append_gate(QCS_Program *program, QCS_Gate gate) {
+  QCS_Circuit circuit = circuit_of(program->qubit_count, &gate, 1);
+  qcs_program_append_circuit(program, &circuit);
+  qcs_circuit_destroy(&circuit);
+}
+
+// an op list holding gate, as a circuit on n qubits
+static QCS_Op *ops_of_gate(uint32_t n, QCS_Gate gate) {
+  QCS_Circuit circuit = circuit_of(n, &gate, 1);
+  QCS_Op *ops = nullptr;
+  qcs_ops_append_circuit(&ops, &circuit);
+  qcs_circuit_destroy(&circuit);
+  return ops;
+}
+
+// run program SHOTS times on the GPU, count each clbits value (below 8),
+// destroy it
+static void gpu_counts(QCS_Program *program, size_t counts[8]) {
+  static uint64_t clbits[SHOTS];
+  QCS_Random random = qcs_random_create(7);
+  assert(qcs_gpu_program_run(program, SHOTS, &random, clbits) == QCS_ERR_OK);
+  for (size_t k = 0; k < 8; k++) {
+    counts[k] = 0;
+  }
+  for (size_t s = 0; s < SHOTS; s++) {
+    assert(clbits[s] < 8);
+    counts[clbits[s]]++;
+  }
+  qcs_program_destroy(program);
+}
+
+// The executor on the GPU: sampled, per shot, reset, if, teleportation
+static void test_program_run(void) {
+  size_t counts[8];
+
+  // Bell, measured at the end: sampled
+  QCS_Program program = qcs_program_create(2, 2);
+  append_gate(&program, qcs_gate_create_h(0));
+  append_gate(&program, qcs_gate_create_cx(1, 0));
+  assert(qcs_program_append_measure(&program, 0, 0) == QCS_ERR_OK);
+  assert(qcs_program_append_measure(&program, 1, 1) == QCS_ERR_OK);
+  gpu_counts(&program, counts);
+  assert(near_expected(counts[0b00], 0.5) && near_expected(counts[0b11], 0.5));
+  assert(counts[0b01] == 0 && counts[0b10] == 0);
+
+  // x after measuring its qubit: c1 = !c0
+  program = qcs_program_create(1, 2);
+  append_gate(&program, qcs_gate_create_h(0));
+  assert(qcs_program_append_measure(&program, 0, 0) == QCS_ERR_OK);
+  append_gate(&program, qcs_gate_create_x(0));
+  assert(qcs_program_append_measure(&program, 0, 1) == QCS_ERR_OK);
+  gpu_counts(&program, counts);
+  assert(near_expected(counts[0b01], 0.5) && near_expected(counts[0b10], 0.5));
+  assert(counts[0b00] == 0 && counts[0b11] == 0);
+
+  // reset of |1⟩
+  program = qcs_program_create(1, 1);
+  append_gate(&program, qcs_gate_create_x(0));
+  assert(qcs_program_append_reset(&program, 0) == QCS_ERR_OK);
+  assert(qcs_program_append_measure(&program, 0, 0) == QCS_ERR_OK);
+  gpu_counts(&program, counts);
+  assert(counts[0] == SHOTS);
+
+  // if (c0) x q0: c1 always 0
+  program = qcs_program_create(1, 2);
+  append_gate(&program, qcs_gate_create_h(0));
+  assert(qcs_program_append_measure(&program, 0, 0) == QCS_ERR_OK);
+  QCS_Op *then_ops = ops_of_gate(1, qcs_gate_create_x(0));
+  assert(qcs_program_append_if(&program, 1, 1, &then_ops, nullptr) ==
+         QCS_ERR_OK);
+  assert(qcs_program_append_measure(&program, 0, 1) == QCS_ERR_OK);
+  gpu_counts(&program, counts);
+  assert(near_expected(counts[0b00], 0.5) && near_expected(counts[0b01], 0.5));
+  assert(counts[0b10] == 0 && counts[0b11] == 0);
+
+  // teleport |1⟩: q2 always 1, (c0, c1) a quarter each
+  program = qcs_program_create(3, 3);
+  append_gate(&program, qcs_gate_create_x(0));
+  append_gate(&program, qcs_gate_create_h(1));
+  append_gate(&program, qcs_gate_create_cx(2, 1));
+  append_gate(&program, qcs_gate_create_cx(1, 0));
+  append_gate(&program, qcs_gate_create_h(0));
+  assert(qcs_program_append_measure(&program, 0, 0) == QCS_ERR_OK);
+  assert(qcs_program_append_measure(&program, 1, 1) == QCS_ERR_OK);
+  QCS_Op *fix_x = ops_of_gate(3, qcs_gate_create_x(2));
+  QCS_Op *fix_z = ops_of_gate(3, qcs_gate_create_z(2));
+  assert(qcs_program_append_if(&program, 0b10, 0b10, &fix_x, nullptr) ==
+         QCS_ERR_OK);
+  assert(qcs_program_append_if(&program, 0b01, 0b01, &fix_z, nullptr) ==
+         QCS_ERR_OK);
+  assert(qcs_program_append_measure(&program, 2, 2) == QCS_ERR_OK);
+  gpu_counts(&program, counts);
+  for (size_t k = 0; k < 4; k++) {
+    assert(counts[k] == 0);
+    assert(near_expected(counts[0b100 | k], 0.25));
+  }
+}
+
 int main(void) {
   // more qubits than any GPU fits: refused before init
   assert(qcs_gpu_init(QCS_MAX_QUBITS + 1) == QCS_ERR_MAX_QUBITS);
@@ -264,12 +508,17 @@ int main(void) {
   }
   test_run_random();
   test_run_split();
+  test_run_global_phase();
   test_run_mismatch();
 
   test_probabilities_random();
   test_probabilities_zero_qubits();
   test_sample_basis();
   test_sample_bell();
+
+  test_measure();
+  test_collapse_teleport();
+  test_program_run();
   qcs_gpu_terminate();
 
   puts("gpu ok");

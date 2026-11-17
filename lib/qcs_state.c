@@ -1,3 +1,5 @@
+#include "qcs/gate.h"
+#include "qcs/random.h"
 #include <math.h>
 #include <qcs/core.h>
 #include <qcs/state.h>
@@ -75,6 +77,7 @@ void qcs_state_apply_gate(QCS_State *state, QCS_Gate gate) {
   size_t target_mask = target_bit - 1;
   // 2^(n-1) pairs
   size_t pairs_count = qcs_state_size(state) / 2;
+  uint32_t controls = gate.control_ones | gate.control_zeros;
   for (size_t p = 0; p < pairs_count; p++) {
     // i0/i1 is the pair with 0/1 inserted at target position
     size_t low = (p & target_mask);
@@ -82,8 +85,8 @@ void qcs_state_apply_gate(QCS_State *state, QCS_Gate gate) {
     // work out pairs
     size_t i0 = high | low;
     size_t i1 = i0 | target_bit;
-    // check controls
-    if ((i0 & gate.controls) != gate.controls) {
+    // check controls: the ones at 1, the zeros at 0
+    if ((i0 & controls) != gate.control_ones) {
       continue;
     }
     // retrieve amplitudes
@@ -191,5 +194,55 @@ QCS_Error qcs_state_fidelity(const QCS_State *a, const QCS_State *b,
 
   // |<a|b>|^2 / (<a|a> * <b|b>)
   *out = (creal(s) * creal(s) + cimag(s) * cimag(s)) / (norm_a * norm_b);
+  return QCS_ERR_OK;
+}
+
+QCS_Error qcs_state_measure(QCS_State *state, uint32_t qubit,
+                            QCS_Random *random, bool *value) {
+  if (qubit >= state->n) {
+    fprintf(stderr, "[e] invalid qubit: %u, state has %u qubits\n", qubit,
+            state->n);
+    return QCS_ERR_QUBIT_RANGE;
+  }
+
+  size_t size = qcs_state_size(state);
+
+  // probabilities that the qubit is 0 or 1
+  size_t bit = (size_t)1 << qubit;
+  double p[2] = {0, 0};
+  for (size_t i = 0; i < size; i++) {
+    bool one = (i & bit) != 0;
+    p[one] += qcs_state_probability(state, i);
+  }
+  double total = p[0] + p[1];
+  if (!(total > 0)) {
+    fprintf(stderr, "[e] invalid state: total probability %.17g\n", total);
+    return QCS_ERR_INVALID_STATE;
+  }
+
+  // draw
+  *value = qcs_random_next_double(random) * total < p[0] ? 0 : 1;
+
+  // collapse state and renormalize
+  double scale = 1 / sqrt(p[*value]);
+  for (size_t i = 0; i < size; i++) {
+    bool one = (i & bit) != 0;
+    bool has_value = one == (*value == 1);
+    state->amps[i] = has_value ? state->amps[i] * scale : 0;
+  }
+  return QCS_ERR_OK;
+}
+
+QCS_Error qcs_state_reset(QCS_State *state, uint32_t qubit,
+                          QCS_Random *random) {
+  // measure
+  bool value;
+  QCS_Error err = qcs_state_measure(state, qubit, random, &value);
+  if (err != QCS_ERR_OK) {
+    return err;
+  }
+  if (value == 1) {
+    qcs_state_apply_gate(state, qcs_gate_create_x(qubit));
+  }
   return QCS_ERR_OK;
 }

@@ -2,6 +2,7 @@
 
 #undef NDEBUG
 #include <assert.h>
+#include <math.h>
 #include <qcs/qcs.h>
 #include <stdio.h>
 #include <string.h>
@@ -63,11 +64,11 @@ static void test_push_order(void) {
 
   QCS_Gate first = bell.gates[0];
   assert(qcs_gate_matrix_equal(first, qcs_gate_create_h(0)));
-  assert(first.target == 0 && first.controls == 0);
+  assert(first.target == 0 && first.control_ones == 0);
 
   QCS_Gate second = bell.gates[1];
   assert(qcs_gate_matrix_equal(second, qcs_gate_create_x(1)));
-  assert(second.target == 1 && second.controls == 0b01);
+  assert(second.target == 1 && second.control_ones == 0b01);
 
   qcs_circuit_destroy(&bell);
 }
@@ -79,7 +80,7 @@ static void test_push_last_qubit(void) {
   push_ok(&circuit, qcs_gate_create_cx(0, 2));
 
   QCS_Gate ccx = qcs_gate_create_cx(0, 1);
-  qcs_gate_add_control(&ccx, 2);
+  qcs_gate_add_control_one(&ccx, 2);
   push_ok(&circuit, ccx);
 
   assert(qcs_circuit_gate_count(&circuit) == 3);
@@ -98,14 +99,28 @@ static void test_push_invalid(void) {
   // Control past the last qubit
   push_fails(&circuit, qcs_gate_create_cx(0, 3), QCS_ERR_QUBIT_RANGE);
   QCS_Gate ccx = qcs_gate_create_cx(0, 1);
-  qcs_gate_add_control(&ccx, 5);
+  qcs_gate_add_control_one(&ccx, 5);
   push_fails(&circuit, ccx, QCS_ERR_QUBIT_RANGE);
 
   // A gate controlled by its own target
   push_fails(&circuit, qcs_gate_create_cx(1, 1), QCS_ERR_CONTROL_ON_TARGET);
   QCS_Gate x = qcs_gate_create_x(2);
-  qcs_gate_add_control(&x, 2);
+  qcs_gate_add_control_one(&x, 2);
   push_fails(&circuit, x, QCS_ERR_CONTROL_ON_TARGET);
+  x = qcs_gate_create_x(2);
+  qcs_gate_add_control_zero(&x, 2);
+  push_fails(&circuit, x, QCS_ERR_CONTROL_ON_TARGET);
+
+  // Control on 0 past the last qubit
+  x = qcs_gate_create_x(0);
+  qcs_gate_add_control_zero(&x, 3);
+  push_fails(&circuit, x, QCS_ERR_QUBIT_RANGE);
+
+  // A qubit controlling on 1 and on 0
+  x = qcs_gate_create_x(0);
+  qcs_gate_add_control_one(&x, 1);
+  qcs_gate_add_control_zero(&x, 1);
+  push_fails(&circuit, x, QCS_ERR_CONTROL_ONE_AND_ZERO);
 
   // The valid gate is still the only one
   assert(qcs_circuit_gate_count(&circuit) == 1);
@@ -182,6 +197,46 @@ static void test_independent(void) {
   qcs_circuit_destroy(&b);
 }
 
+// circuit printed by qcs_circuit_fdump is exactly expected
+static void expect_print(const QCS_Circuit *circuit, const char *expected) {
+  // print into a temporary file, read it back
+  FILE *file = tmpfile();
+  assert(file);
+  qcs_circuit_fdump(circuit, file);
+  char text[256];
+  rewind(file);
+  size_t length = fread(text, 1, sizeof text - 1, file);
+  text[length] = '\0';
+  fclose(file);
+  assert(strcmp(text, expected) == 0);
+}
+
+// Printed one gate per line, in order, after the global phase
+static void test_print(void) {
+  QCS_Circuit circuit = new_circuit(2);
+  push_ok(&circuit, qcs_gate_create_h(0));
+  push_ok(&circuit, qcs_gate_create_cx(1, 0));
+  expect_print(&circuit, "h q[0]\ncx q[1] ctrl q[0]\n");
+  circuit.global_phase = 0.3;
+  expect_print(&circuit, "gphase(0.3)\nh q[0]\ncx q[1] ctrl q[0]\n");
+  qcs_circuit_destroy(&circuit);
+}
+
+// The global phase multiplies every amplitude
+static void test_global_phase(void) {
+  QCS_Circuit circuit = new_circuit(1);
+  push_ok(&circuit, qcs_gate_create_h(0));
+  circuit.global_phase = 0.3;
+  QCS_State state;
+  assert(qcs_state_create(1, &state) == QCS_ERR_OK);
+  assert(qcs_circuit_run(&circuit, &state) == QCS_ERR_OK);
+  double complex amp = cexp(0.3 * I) / sqrt(2);
+  assert(qcs_c128_near(state.amps[0], amp));
+  assert(qcs_c128_near(state.amps[1], amp));
+  qcs_state_destroy(&state);
+  qcs_circuit_destroy(&circuit);
+}
+
 int main(void) {
   test_create();
   test_create_overwrites();
@@ -194,6 +249,8 @@ int main(void) {
   test_clear_empty();
   test_destroy();
   test_independent();
+  test_print();
+  test_global_phase();
   puts("circuit ok");
   return 0;
 }

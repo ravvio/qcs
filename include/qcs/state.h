@@ -42,4 +42,10 @@ void qcs_sample_cdf(const double *cdf, size_t size, size_t shots,
 QCS_Error qcs_state_fidelity(const QCS_State *a, const QCS_State *b,
                              double *out);
 
+// Measure qubit into value, collapsing the state
+QCS_Error qcs_state_measure(QCS_State *state, uint32_t qubit,
+                            QCS_Random *random, bool *value);
+// Measure qubit and set it to 0
+QCS_Error qcs_state_reset(QCS_State *state, uint32_t qubit, QCS_Random *random);
+
 #endif
