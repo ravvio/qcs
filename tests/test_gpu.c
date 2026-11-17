@@ -259,20 +259,6 @@ static void test_sample_bell(void) {
   qcs_circuit_destroy(&circuit);
 }
 
-// collapse qubit of state onto value, as qcs_state_measure does
-static void cpu_collapse(QCS_State *state, uint32_t qubit, bool value) {
-  double p = 0;
-  for (size_t i = 0; i < qcs_state_size(state); i++) {
-    if ((bool)(i >> qubit & 1) == value) {
-      p += qcs_state_probability(state, i);
-    }
-  }
-  for (size_t i = 0; i < qcs_state_size(state); i++) {
-    bool keep = (bool)(i >> qubit & 1) == value;
-    state->amps[i] = keep ? state->amps[i] / sqrt(p) : 0;
-  }
-}
-
 // circuit on n qubits of the gates
 static QCS_Circuit circuit_of(uint32_t n, const QCS_Gate *gates, size_t count) {
   QCS_Circuit circuit;
@@ -351,8 +337,8 @@ static void test_collapse_teleport(void) {
     QCS_State cpu;
     assert(qcs_state_create(3, &cpu) == QCS_ERR_OK);
     assert(qcs_circuit_run(&prefix, &cpu) == QCS_ERR_OK);
-    cpu_collapse(&cpu, 0, c0);
-    cpu_collapse(&cpu, 1, c1);
+    assert(qcs_state_collapse(&cpu, 0, c0) == QCS_ERR_OK);
+    assert(qcs_state_collapse(&cpu, 1, c1) == QCS_ERR_OK);
     assert(qcs_circuit_run(&fix, &cpu) == QCS_ERR_OK);
 
     // GPU

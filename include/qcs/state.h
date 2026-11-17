@@ -47,5 +47,10 @@ QCS_Error qcs_state_measure(QCS_State *state, uint32_t qubit,
                             QCS_Random *random, bool *value);
 // Measure qubit and set it to 0
 QCS_Error qcs_state_reset(QCS_State *state, uint32_t qubit, QCS_Random *random);
+// Probabilities of qubit being 0 and 1, into p
+QCS_Error qcs_state_qubit_probabilities(const QCS_State *state, uint32_t qubit,
+                                        double p[2]);
+// Collapse qubit onto value, as a measure that drew it
+QCS_Error qcs_state_collapse(QCS_State *state, uint32_t qubit, bool value);
 
 #endif

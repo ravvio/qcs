@@ -1,5 +1,6 @@
 #include "qcs/program.h"
 #include "qcs/state.h"
+#include "qcs_simulator.h"
 #include <qcs/qcs.h>
 #include <stb_ds.h>
 #include <stddef.h>
@@ -291,40 +292,6 @@ bool qcs_program_can_sample(const QCS_Program *program) {
   return true;
 }
 
-// apply op to state, writing measured bits into clbits
-static QCS_Error qcs_op_run(const QCS_Op *op, QCS_State *state,
-                            uint64_t *clbits, QCS_Random *random) {
-  switch (op->kind) {
-  case QCS_OP_GATES:
-    return qcs_circuit_run(&op->gates, state);
-  case QCS_OP_MEASURE: {
-    bool value;
-    QCS_Error err = qcs_state_measure(state, op->measure.qubit, random, &value);
-    if (err != QCS_ERR_OK) {
-      return err;
-    }
-    uint64_t bit = 1ull << op->measure.clbit;
-    *clbits = value ? *clbits | bit : *clbits & ~bit;
-    return QCS_ERR_OK;
-  }
-  case QCS_OP_RESET:
-    return qcs_state_reset(state, op->qubit, random);
-  case QCS_OP_IF: {
-    // the branch the clbits pick
-    bool taken = (*clbits & op->branch.mask) == op->branch.value;
-    const QCS_Op *ops = taken ? op->branch.then_ops : op->branch.else_ops;
-    for (size_t i = 0; i < qcs_ops_count(ops); i++) {
-      QCS_Error err = qcs_op_run(&ops[i], state, clbits, random);
-      if (err != QCS_ERR_OK) {
-        return err;
-      }
-    }
-    return QCS_ERR_OK;
-  }
-  }
-  return QCS_ERR_OK;
-}
-
 // clbits of a sampled pattern: each measure copies its qubit's bit into its
 // clbit, in program order
 uint64_t qcs_program_clbits(const QCS_Program *program, size_t pattern) {
@@ -340,83 +307,62 @@ uint64_t qcs_program_clbits(const QCS_Program *program, size_t pattern) {
   return bits;
 }
 
-// run the gates once, sample state, set each shot's clbits from its pattern
-static QCS_Error qcs_program_run_sampled(const QCS_Program *program,
-                                         size_t shots, QCS_Random *random,
-                                         QCS_State *state, uint64_t *clbits) {
-  // run every gate
-  for (size_t i = 0; i < qcs_ops_count(program->ops); i++) {
-    if (program->ops[i].kind == QCS_OP_GATES) {
-      QCS_Error err = qcs_circuit_run(&program->ops[i].gates, state);
-      if (err != QCS_ERR_OK) {
-        return err;
-      }
-    }
+// a CPU state of n qubits, or NULL
+static void *qcs_cpu_state_create(void *, uint32_t n) {
+  QCS_State *state = malloc(sizeof *state);
+  if (!state || qcs_state_create(n, state) != QCS_ERR_OK) {
+    free(state);
+    return nullptr;
   }
-
-  // sample the patterns
-  size_t *outcomes = malloc(shots * sizeof *outcomes);
-  if (outcomes == NULL && shots > 0) {
-    fprintf(stderr, "[e] out of memory for %zu shots\n", shots);
-    return QCS_ERR_OUT_OF_MEMORY;
-  }
-  QCS_Error err = qcs_state_sample(state, shots, random, outcomes);
-
-  // read each shot's clbits off its pattern
-  for (size_t s = 0; err == QCS_ERR_OK && s < shots; s++) {
-    clbits[s] = qcs_program_clbits(program, outcomes[s]);
-  }
-  free(outcomes);
-  return err;
+  return state;
 }
 
-// run the leading gates into prefix once, the rest per shot from a copy
-static QCS_Error qcs_program_run_shots(const QCS_Program *program, size_t shots,
-                                       QCS_Random *random, QCS_State *prefix,
-                                       uint64_t *clbits) {
-  // the prefix: runs merge, so at most the first op
-  size_t first = 0;
-  if (qcs_ops_count(program->ops) > 0 && program->ops[0].kind == QCS_OP_GATES) {
-    QCS_Error err = qcs_circuit_run(&program->ops[0].gates, prefix);
-    if (err != QCS_ERR_OK) {
-      return err;
-    }
-    first = 1;
+// a copy of a CPU state, or NULL
+static void *qcs_cpu_state_copy(void *context, const void *state) {
+  const QCS_State *from = state;
+  QCS_State *copy = qcs_cpu_state_create(context, from->n);
+  if (copy) {
+    memcpy(copy->amps, from->amps, qcs_state_size(from) * sizeof *from->amps);
   }
-
-  // every shot from a copy of the prefix
-  QCS_State state;
-  QCS_Error err = qcs_state_create(prefix->n, &state);
-  if (err != QCS_ERR_OK) {
-    return err;
-  }
-  size_t bytes = qcs_state_size(prefix) * sizeof *prefix->amps;
-  for (size_t s = 0; err == QCS_ERR_OK && s < shots; s++) {
-    memcpy(state.amps, prefix->amps, bytes);
-    uint64_t bits = 0;
-    for (size_t i = first; err == QCS_ERR_OK && i < qcs_ops_count(program->ops);
-         i++) {
-      err = qcs_op_run(&program->ops[i], &state, &bits, random);
-    }
-    clbits[s] = bits;
-  }
-  qcs_state_destroy(&state);
-  return err;
+  return copy;
 }
 
-// run program shots times, each shot's clbits into clbits
+static void qcs_cpu_state_destroy(void *, void *state) {
+  qcs_state_destroy(state);
+  free(state);
+}
+
+static QCS_Error qcs_cpu_state_run(void *, void *state,
+                                   const QCS_Circuit *circuit) {
+  return qcs_circuit_run(circuit, state);
+}
+
+static QCS_Error qcs_cpu_state_qubit_probabilities(void *, void *state,
+                                                   uint32_t qubit,
+                                                   double p[2]) {
+  return qcs_state_qubit_probabilities(state, qubit, p);
+}
+
+static QCS_Error qcs_cpu_state_collapse(void *, void *state, uint32_t qubit,
+                                        bool value, const double *) {
+  return qcs_state_collapse(state, qubit, value);
+}
+
+static QCS_Error qcs_cpu_state_sample(void *, void *state, size_t shots,
+                                      QCS_Random *random, size_t *outcomes) {
+  return qcs_state_sample(state, shots, random, outcomes);
+}
+
 QCS_Error qcs_program_run(const QCS_Program *program, size_t shots,
                           QCS_Random *random, uint64_t *clbits) {
-  // Sample or per-shot run
-  bool sample = qcs_program_can_sample(program);
-
-  QCS_State state;
-  QCS_Error err = qcs_state_create(program->qubit_count, &state);
-  if (err != QCS_ERR_OK) {
-    return err;
-  }
-  err = sample ? qcs_program_run_sampled(program, shots, random, &state, clbits)
-               : qcs_program_run_shots(program, shots, random, &state, clbits);
-  qcs_state_destroy(&state);
-  return err;
+  const QCS_Simulator cpu = {
+      .create = qcs_cpu_state_create,
+      .copy = qcs_cpu_state_copy,
+      .destroy = qcs_cpu_state_destroy,
+      .run = qcs_cpu_state_run,
+      .qubit_probabilities = qcs_cpu_state_qubit_probabilities,
+      .collapse = qcs_cpu_state_collapse,
+      .sample = qcs_cpu_state_sample,
+  };
+  return qcs_simulator_run_program(&cpu, program, shots, random, clbits);
 }

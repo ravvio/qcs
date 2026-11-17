@@ -246,3 +246,39 @@ QCS_Error qcs_state_reset(QCS_State *state, uint32_t qubit,
   }
   return QCS_ERR_OK;
 }
+
+QCS_Error qcs_state_qubit_probabilities(const QCS_State *state, uint32_t qubit,
+                                        double p[2]) {
+  if (qubit >= state->n) {
+    fprintf(stderr, "[e] invalid qubit: %u, state has %u qubits\n", qubit,
+            state->n);
+    return QCS_ERR_QUBIT_RANGE;
+  }
+  p[0] = 0;
+  p[1] = 0;
+  for (size_t i = 0; i < qcs_state_size(state); i++) {
+    p[i >> qubit & 1] += qcs_state_probability(state, i);
+  }
+  return QCS_ERR_OK;
+}
+
+QCS_Error qcs_state_collapse(QCS_State *state, uint32_t qubit, bool value) {
+  double p[2];
+  QCS_Error err = qcs_state_qubit_probabilities(state, qubit, p);
+  if (err != QCS_ERR_OK) {
+    return err;
+  }
+  if (!(p[value] > 0)) {
+    fprintf(stderr, "[e] invalid state: q[%u] is %d with probability %.17g\n",
+            qubit, value, p[value]);
+    return QCS_ERR_INVALID_STATE;
+  }
+
+  // keep the amplitudes that agree, scaled by 1/√p
+  double scale = 1 / sqrt(p[value]);
+  for (size_t i = 0; i < qcs_state_size(state); i++) {
+    bool keep = (bool)(i >> qubit & 1) == value;
+    state->amps[i] = keep ? state->amps[i] * scale : 0;
+  }
+  return QCS_ERR_OK;
+}

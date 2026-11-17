@@ -34,6 +34,7 @@ set(QCS_SOURCES
     ./lib/qcs_random.c
     ./lib/qcs_gpu.c
     ./lib/qcs_program.c
+    ./lib/qcs_simulator.c
     ./lib/qasm/qcs_qasm_lexer.c
     ./lib/qasm/qcs_qasm_ast.c
     ./lib/qasm/qcs_qasm_parser.c

@@ -1,4 +1,5 @@
 #include "qcs/state.h"
+#include "qcs_simulator.h"
 #include <gfx/gfx.h>
 #include <math.h>
 #include <qcs/gpu.h>
@@ -260,7 +261,7 @@ static_assert(sizeof(QCS_GPUCollapse) == 16);
 
 // Compiled shaders of the measures and the executor
 typedef struct {
-  GFX_ComputeShader gate, probabilities, collapse;
+  GFX_ComputeShader gate, probabilities, collapse, copy;
 } QCS_GPUShaders;
 
 static QCS_GPUShaders qcs_gpu_shaders_create(void) {
@@ -271,6 +272,7 @@ static QCS_GPUShaders qcs_gpu_shaders_create(void) {
           QCS_SHADER_DIR "qubit_probabilities.wgsl", sizeof(QCS_GPUMeasure), 2),
       .collapse = gfx_compute_shader_create(QCS_SHADER_DIR "collapse.wgsl",
                                             sizeof(QCS_GPUCollapse), 1),
+      .copy = gfx_compute_shader_create(QCS_SHADER_DIR "copy.wgsl", 0, 2),
   };
 }
 
@@ -278,6 +280,7 @@ static void qcs_gpu_shaders_destroy(QCS_GPUShaders *shaders) {
   gfx_compute_shader_destroy(&shaders->gate);
   gfx_compute_shader_destroy(&shaders->probabilities);
   gfx_compute_shader_destroy(&shaders->collapse);
+  gfx_compute_shader_destroy(&shaders->copy);
 }
 
 // sum the probabilities of qubit being 0 and 1 into p: one sum per workgroup
@@ -365,27 +368,6 @@ static QCS_Error qcs_gpu_state_measure_with(QCS_GPUState *state,
   return qcs_gpu_state_collapse_with(state, shaders, qubit, *value, p);
 }
 
-// measure qubit, then flip it to 0 if it was 1
-static QCS_Error qcs_gpu_state_reset_with(QCS_GPUState *state,
-                                          const QCS_GPUShaders *shaders,
-                                          uint32_t qubit, QCS_Random *random) {
-  bool value;
-  QCS_Error err =
-      qcs_gpu_state_measure_with(state, shaders, qubit, random, &value);
-  if (err != QCS_ERR_OK || !value) {
-    return err;
-  }
-  QCS_GPUGate x = qcs_gpu_gate_from_cpu(qcs_gate_create_x(qubit));
-  const GFX_StorageBuffer *buffers[] = {&state->amps};
-  uint32_t gx, gy;
-  gfx_compute_groups(((size_t)1 << state->n) / 2, QCS_GPU_WORKGROUP_SIZE, &gx,
-                     &gy);
-  gfx_compute_begin();
-  gfx_compute_dispatch(&shaders->gate, buffers, &x, gx, gy, 1);
-  gfx_compute_end();
-  return QCS_ERR_OK;
-}
-
 QCS_Error qcs_gpu_state_measure(QCS_GPUState *state, uint32_t qubit,
                                 QCS_Random *random, bool *value) {
   QCS_GPUShaders shaders = qcs_gpu_shaders_create();
@@ -407,134 +389,78 @@ QCS_Error qcs_gpu_state_collapse(QCS_GPUState *state, uint32_t qubit,
   return err;
 }
 
-// apply op to state, writing measured bits into clbits
-static QCS_Error qcs_gpu_op_run(const QCS_Op *op, QCS_GPUState *state,
-                                const QCS_GPUShaders *shaders, uint64_t *clbits,
-                                QCS_Random *random) {
-  switch (op->kind) {
-  case QCS_OP_GATES:
-    return qcs_gpu_circuit_dispatch(&op->gates, state, &shaders->gate);
-  case QCS_OP_MEASURE: {
-    bool value;
-    QCS_Error err = qcs_gpu_state_measure_with(
-        state, shaders, op->measure.qubit, random, &value);
-    if (err != QCS_ERR_OK) {
-      return err;
-    }
-    uint64_t bit = 1ull << op->measure.clbit;
-    *clbits = value ? *clbits | bit : *clbits & ~bit;
-    return QCS_ERR_OK;
+// a GPU state of n qubits, or NULL
+static void *qcs_gpu_simulator_create(void *, uint32_t n) {
+  QCS_GPUState *state = malloc(sizeof *state);
+  if (!state || qcs_gpu_state_create(n, state) != QCS_ERR_OK) {
+    free(state);
+    return nullptr;
   }
-  case QCS_OP_RESET:
-    return qcs_gpu_state_reset_with(state, shaders, op->qubit, random);
-  case QCS_OP_IF: {
-    // the branch the clbits pick
-    bool taken = (*clbits & op->branch.mask) == op->branch.value;
-    const QCS_Op *ops = taken ? op->branch.then_ops : op->branch.else_ops;
-    for (size_t i = 0; i < qcs_ops_count(ops); i++) {
-      QCS_Error err = qcs_gpu_op_run(&ops[i], state, shaders, clbits, random);
-      if (err != QCS_ERR_OK) {
-        return err;
-      }
-    }
-    return QCS_ERR_OK;
-  }
-  }
-  return QCS_ERR_OK;
+  return state;
 }
 
-// run the gates once, sample state, set each shot's clbits from its pattern
-static QCS_Error qcs_gpu_program_run_sampled(const QCS_Program *program,
-                                             size_t shots, QCS_Random *random,
-                                             QCS_GPUState *state,
-                                             const QCS_GPUShaders *shaders,
-                                             uint64_t *clbits) {
-  // run every gate
-  for (size_t i = 0; i < qcs_ops_count(program->ops); i++) {
-    if (program->ops[i].kind == QCS_OP_GATES) {
-      QCS_Error err = qcs_gpu_circuit_dispatch(&program->ops[i].gates, state,
-                                               &shaders->gate);
-      if (err != QCS_ERR_OK) {
-        return err;
-      }
-    }
+// a copy of a GPU state, by the copy kernel, or NULL
+static void *qcs_gpu_simulator_copy(void *context, const void *state) {
+  const QCS_GPUShaders *shaders = context;
+  const QCS_GPUState *from = state;
+  QCS_GPUState *copy = qcs_gpu_simulator_create(context, from->n);
+  if (!copy) {
+    return nullptr;
   }
-
-  // sample the patterns, read each shot's clbits off its pattern
-  size_t *outcomes = malloc(shots * sizeof *outcomes);
-  if (outcomes == NULL && shots > 0) {
-    fprintf(stderr, "[e] out of memory for %zu shots\n", shots);
-    return QCS_ERR_OUT_OF_MEMORY;
-  }
-  QCS_Error err = qcs_gpu_state_sample(state, shots, random, outcomes);
-  for (size_t s = 0; err == QCS_ERR_OK && s < shots; s++) {
-    clbits[s] = qcs_program_clbits(program, outcomes[s]);
-  }
-  free(outcomes);
-  return err;
+  const GFX_StorageBuffer *buffers[] = {&from->amps, &copy->amps};
+  uint32_t gx, gy;
+  gfx_compute_groups((size_t)1 << from->n, QCS_GPU_WORKGROUP_SIZE, &gx, &gy);
+  gfx_compute_begin();
+  gfx_compute_dispatch(&shaders->copy, buffers, NULL, gx, gy, 1);
+  gfx_compute_end();
+  return copy;
 }
 
-// run the leading gates once and read them back, then the rest per shot from
-// an upload of them
-static QCS_Error qcs_gpu_program_run_shots(const QCS_Program *program,
-                                           size_t shots, QCS_Random *random,
-                                           QCS_GPUState *state,
-                                           const QCS_GPUShaders *shaders,
-                                           uint64_t *clbits) {
-  // the prefix: runs merge, so at most the first op
-  size_t first = 0;
-  if (qcs_ops_count(program->ops) > 0 && program->ops[0].kind == QCS_OP_GATES) {
-    QCS_Error err =
-        qcs_gpu_circuit_dispatch(&program->ops[0].gates, state, &shaders->gate);
-    if (err != QCS_ERR_OK) {
-      return err;
-    }
-    first = 1;
-  }
+static void qcs_gpu_simulator_destroy(void *, void *state) {
+  qcs_gpu_state_destroy(state);
+  free(state);
+}
 
-  // read it back once
-  size_t bytes = (size_t)QCS_GPU_AMP_SIZE << state->n;
-  float *prefix = malloc(bytes);
-  if (!prefix) {
-    fprintf(stderr, "[e] out of memory for a prefix state of %zu bytes\n",
-            bytes);
-    return QCS_ERR_OUT_OF_MEMORY;
-  }
-  if (gfx_storage_buffer_read(&state->amps, 0, prefix, bytes) != GFX_ERR_OK) {
-    fprintf(stderr, "[e] could not read back the prefix state\n");
-    free(prefix);
-    return QCS_ERR_GPU;
-  }
+static QCS_Error qcs_gpu_simulator_run(void *context, void *state,
+                                       const QCS_Circuit *circuit) {
+  const QCS_GPUShaders *shaders = context;
+  return qcs_gpu_circuit_dispatch(circuit, state, &shaders->gate);
+}
 
-  // every shot from an upload of the prefix
-  QCS_Error err = QCS_ERR_OK;
-  for (size_t s = 0; err == QCS_ERR_OK && s < shots; s++) {
-    gfx_storage_buffer_write(&state->amps, 0, prefix, bytes);
-    uint64_t bits = 0;
-    for (size_t i = first; err == QCS_ERR_OK && i < qcs_ops_count(program->ops);
-         i++) {
-      err = qcs_gpu_op_run(&program->ops[i], state, shaders, &bits, random);
-    }
-    clbits[s] = bits;
-  }
-  free(prefix);
-  return err;
+static QCS_Error qcs_gpu_simulator_qubit_probabilities(void *context,
+                                                       void *state,
+                                                       uint32_t qubit,
+                                                       double p[2]) {
+  return qcs_gpu_state_qubit_probabilities(state, context, qubit, p);
+}
+
+static QCS_Error qcs_gpu_simulator_collapse(void *context, void *state,
+                                            uint32_t qubit, bool value,
+                                            const double p[2]) {
+  return qcs_gpu_state_collapse_with(state, context, qubit, value, p);
+}
+
+static QCS_Error qcs_gpu_simulator_sample(void *, void *state, size_t shots,
+                                          QCS_Random *random,
+                                          size_t *outcomes) {
+  return qcs_gpu_state_sample(state, shots, random, outcomes);
 }
 
 QCS_Error qcs_gpu_program_run(const QCS_Program *program, size_t shots,
                               QCS_Random *random, uint64_t *clbits) {
-  QCS_GPUState state;
-  QCS_Error err = qcs_gpu_state_create(program->qubit_count, &state);
-  if (err != QCS_ERR_OK) {
-    return err;
-  }
   QCS_GPUShaders shaders = qcs_gpu_shaders_create();
-  err = qcs_program_can_sample(program)
-            ? qcs_gpu_program_run_sampled(program, shots, random, &state,
-                                          &shaders, clbits)
-            : qcs_gpu_program_run_shots(program, shots, random, &state,
-                                        &shaders, clbits);
+  const QCS_Simulator gpu = {
+      .context = &shaders,
+      .create = qcs_gpu_simulator_create,
+      .copy = qcs_gpu_simulator_copy,
+      .destroy = qcs_gpu_simulator_destroy,
+      .run = qcs_gpu_simulator_run,
+      .qubit_probabilities = qcs_gpu_simulator_qubit_probabilities,
+      .collapse = qcs_gpu_simulator_collapse,
+      .sample = qcs_gpu_simulator_sample,
+  };
+  QCS_Error err =
+      qcs_simulator_run_program(&gpu, program, shots, random, clbits);
   qcs_gpu_shaders_destroy(&shaders);
-  qcs_gpu_state_destroy(&state);
   return err;
 }
